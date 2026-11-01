@@ -30,6 +30,8 @@ const state = {
   view: { type: 'my' },
   tasks: [],
   filter: { status: 'open', q: '', sort: 'default' },
+  projectView: 'list',
+  canceledCollapsed: true,
   showArchived: false,
   detail: null, // { id, task, subtasks, comments, attachments, activities }
 };
@@ -480,6 +482,7 @@ function renderProjectView() {
       </div>
     </header>
     ${trash ? '<p class="hint pad">휴지통의 할 일은 복구하거나 영구 삭제할 수 있습니다.</p>' : filterBar()}
+    ${!trash ? projectViewSwitch() : ''}
     ${!trash && canEdit && !p.archived_at ? addTaskForm(p) : ''}
     <div id="task-list" class="task-list"></div>`;
   renderTaskList();
@@ -499,6 +502,13 @@ function addTaskForm(p) {
     </select>
     <button class="btn primary" type="submit">추가</button>
   </form>`;
+}
+
+function projectViewSwitch() {
+  return `<div class="view-switch" role="group" aria-label="프로젝트 보기 방식">
+    <button class="view-button${state.projectView === 'list' ? ' on' : ''}" data-action="set-project-view" data-view="list">목록</button>
+    <button class="view-button${state.projectView === 'board' ? ' on' : ''}" data-action="set-project-view" data-view="board">보드</button>
+  </div>`;
 }
 
 function statusMatch(s) {
@@ -557,6 +567,11 @@ function renderTaskList() {
   if (!el) return;
   const v = state.view.type;
 
+  if (v === 'project' && state.projectView === 'board') {
+    renderBoard(el);
+    return;
+  }
+
   if (v === 'trash') {
     const p = projectById(state.view.id);
     const canManage = canManageProject(p);
@@ -593,6 +608,40 @@ function renderTaskList() {
   el.innerHTML = empty(state.tasks.length && filtered
     ? '조건에 맞는 할 일이 없습니다.'
     : v === 'my' ? '배정된 할 일이 없습니다. 🎉' : '아직 할 일이 없습니다. 위 입력창에서 추가해 보세요.');
+}
+
+function boardCard(t) {
+  const labels = t.label_ids.map(labelById).filter(Boolean);
+  return `<article class="board-card st-${t.status}" draggable="true" data-action="open-task" data-id="${t.id}">
+    <div class="board-card-top"><span class="prio p${t.priority}"></span><span class="board-card-title">${esc(t.title)}</span></div>
+    ${labels.length ? `<div class="task-meta">${labels.map((l) => labelChip(l)).join('')}</div>` : ''}
+    <div class="board-card-foot">${t.due_date ? `<span class="due">${dueLabel(t.due_date)}</span>` : '<span></span>'}<span class="avatars">${t.assignee_ids.slice(0, 3).map(avatar).join('')}</span></div>
+  </article>`;
+}
+
+function renderBoard(el) {
+  const topTasks = state.tasks.filter((t) => !t.parent_id);
+  const columns = [['todo', '할 일'], ['in_progress', '진행 중'], ['done', '완료'], ['canceled', '취소']];
+  el.className = 'board';
+  el.innerHTML = columns.map(([status, title]) => {
+    const tasks = sortTasks(topTasks.filter((t) => t.status === status));
+    const collapsed = status === 'canceled' && state.canceledCollapsed;
+    return `<section class="board-column${collapsed ? ' collapsed' : ''}" data-status="${status}">
+      <header class="board-column-head"><h2>${title}<span>${tasks.length}</span></h2>${status === 'canceled' ? `<button class="icon-btn sm" data-action="toggle-canceled" aria-label="취소 칸 ${collapsed ? '펼치기' : '접기'}">${collapsed ? '⌄' : '⌃'}</button>` : ''}</header>
+      <div class="board-dropzone" data-status="${status}">${collapsed ? '' : (tasks.map(boardCard).join('') || '<p class="board-empty">카드를 끌어오세요</p>')}</div>
+    </section>`;
+  }).join('');
+}
+
+async function saveBoardDrop(taskId, nextStatus, orderedIds) {
+  const task = findTask(taskId);
+  if (!task || !canEditProject(projectById(task.project_id))) return;
+  const writes = [];
+  if (task.status !== nextStatus) writes.push(q(sb.from('tasks').update({ status: nextStatus }).eq('id', task.id).select().single()));
+  orderedIds.forEach((id, index) => writes.push(q(sb.from('tasks').update({ sort_order: (index + 1) * 10 }).eq('id', id))));
+  await Promise.all(writes);
+  await loadProjectTasks(state.view.id);
+  renderTaskList();
 }
 
 // -------------------------------------------------------------
@@ -1089,6 +1138,14 @@ const actions = {
     document.querySelectorAll('.chip[data-action="filter-status"]').forEach((c) => c.classList.toggle('on', c === el));
     renderTaskList();
   },
+  'set-project-view': (el) => {
+    state.projectView = el.dataset.view;
+    renderProjectView();
+  },
+  'toggle-canceled': () => {
+    state.canceledCollapsed = !state.canceledCollapsed;
+    renderTaskList();
+  },
   'open-task': (el) => openTask(+el.dataset.id),
   'close-drawer': closeDrawer,
   'toggle-done': async (el) => {
@@ -1356,6 +1413,36 @@ document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset?.input === 'search') { state.filter.q = el.value; renderTaskList(); }
   if (el.classList?.contains('title-input')) autoGrow(el);
+});
+let draggedTaskId = null;
+document.addEventListener('dragstart', (e) => {
+  const card = e.target.closest('.board-card[draggable="true"]');
+  if (!card) return;
+  draggedTaskId = +card.dataset.id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(draggedTaskId));
+  setTimeout(() => card.classList.add('dragging'), 0);
+});
+document.addEventListener('dragend', (e) => {
+  e.target.closest('.board-card')?.classList.remove('dragging');
+  document.querySelectorAll('.board-dropzone.over').forEach((el) => el.classList.remove('over'));
+  draggedTaskId = null;
+});
+document.addEventListener('dragover', (e) => {
+  const zone = e.target.closest('.board-dropzone');
+  if (!zone || draggedTaskId == null) return;
+  e.preventDefault();
+  zone.classList.add('over');
+  const after = [...zone.querySelectorAll('.board-card')].find((card) => e.clientY < card.getBoundingClientRect().top + card.offsetHeight / 2);
+  const dragged = document.querySelector(`.board-card[data-id="${draggedTaskId}"]`);
+  if (dragged) zone.insertBefore(dragged, after || null);
+});
+document.addEventListener('drop', (e) => {
+  const zone = e.target.closest('.board-dropzone');
+  if (!zone || draggedTaskId == null) return;
+  e.preventDefault();
+  const ids = [...zone.querySelectorAll('.board-card')].map((card) => +card.dataset.id);
+  guard(saveBoardDrop)(draggedTaskId, zone.dataset.status, ids);
 });
 document.addEventListener('submit', async (e) => {
   const f = e.target.closest('[data-form]');
