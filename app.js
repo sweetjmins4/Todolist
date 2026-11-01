@@ -417,6 +417,8 @@ function renderMain() {
 }
 
 function filterBar() {
+  // 보드는 상태별 칸 자체가 필터 역할을 하므로 중복 도구 모음을 숨깁니다.
+  if (state.view.type === 'project' && state.projectView === 'board') return '';
   const f = state.filter;
   return `<div class="toolbar">
     <div class="chips">${STATUS_FILTERS.map(([k, l]) =>
