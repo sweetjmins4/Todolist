@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>나의 할 일</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section id="loginScreen" class="login-card">
+        <p class="eyebrow">TODO LIST</p>
+        <h1>오늘 할 일을 정리하세요</h1>
+        <p class="muted">가입한 이메일로 로그인해 프로젝트와 할 일을 관리합니다.</p>
+        <form id="loginForm" class="form-stack">
+          <label>이메일<input id="email" type="email" autocomplete="email" required /></label>
+          <label>비밀번호<input id="password" type="password" autocomplete="current-password" minlength="6" required /></label>
+          <button type="submit">로그인</button>
+        </form>
+        <button id="signUpButton" class="text-button" type="button">처음 사용하나요? 회원가입</button>
+        <p id="loginMessage" class="message" aria-live="polite"></p>
+      </section>
+
+      <section id="appScreen" class="app hidden">
+        <header class="topbar">
+          <div><p class="eyebrow">TODO LIST</p><h1>나의 할 일</h1></div>
+          <div class="user-area"><span id="userEmail"></span><button id="signOutButton" class="secondary">로그아웃</button></div>
+        </header>
+        <div class="workspace">
+          <aside class="sidebar">
+            <div class="section-title"><h2>프로젝트</h2><button id="newProjectButton" class="icon-button" aria-label="프로젝트 만들기">+</button></div>
+            <div id="projectList" class="project-list"></div>
+          </aside>
+          <section class="content">
+            <div id="emptyState" class="empty-state"><h2>프로젝트를 선택하세요</h2><p>왼쪽의 + 버튼으로 개인 프로젝트를 만들 수 있습니다.</p></div>
+            <div id="taskArea" class="hidden">
+              <div class="content-heading"><div><h2 id="projectName"></h2><p id="projectDescription" class="muted"></p></div></div>
+              <form id="taskForm" class="task-form"><input id="taskTitle" maxlength="300" placeholder="새 할 일을 입력하세요" required /><input id="taskDueDate" type="date" aria-label="마감일" /><button type="submit">추가</button></form>
+              <p id="taskMessage" class="message" aria-live="polite"></p>
+              <div id="taskList" class="task-list"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+    <dialog id="projectDialog"><form id="projectForm" method="dialog" class="form-stack"><h2>새 프로젝트</h2><label>프로젝트 이름<input id="newProjectName" maxlength="100" required /></label><label>설명 <span class="optional">(선택)</span><textarea id="newProjectDescription" maxlength="1000"></textarea></label><div class="dialog-actions"><button value="cancel" class="secondary">취소</button><button id="saveProjectButton" value="default">만들기</button></div><p id="projectMessage" class="message"></p></form></dialog>
+    <script src="config.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
