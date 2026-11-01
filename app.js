@@ -34,6 +34,8 @@ const state = {
   canceledCollapsed: true,
   showArchived: false,
   detail: null, // { id, task, subtasks, comments, attachments, activities }
+  organizationHistory: [],
+  organizationHistoryAvailable: true,
 };
 
 // -------------------------------------------------------------
@@ -289,7 +291,15 @@ async function loadBase() {
 }
 async function refreshBase() {
   await loadBase();
+  if (state.view.type === 'teams') await loadOrganizationHistory();
   renderSidebar();
+}
+
+async function loadOrganizationHistory() {
+  const { data, error } = await sb.from('organization_history').select('*')
+    .order('created_at', { ascending: false }).limit(200);
+  state.organizationHistoryAvailable = !error;
+  state.organizationHistory = error ? [] : data;
 }
 
 const norm = (t) => ({
@@ -332,6 +342,7 @@ async function route() {
   } else if (type === 'teams') {
     state.view = { type: 'teams' };
     state.tasks = [];
+    await loadOrganizationHistory();
   } else {
     state.view = { type: 'my' };
     await loadMyTasks();
@@ -923,6 +934,9 @@ function renderTeamsView() {
 
       <h2 class="section-title">구성원</h2>
       <div class="card table-card">${peopleTable(admin)}</div>
+
+      <h2 class="section-title">조직 변경 이력</h2>
+      <div class="card table-card">${organizationHistoryTable()}</div>
     </div>`;
 }
 
@@ -948,7 +962,7 @@ function teamCard(team) {
       <li class="${m.p.is_active ? '' : 'inactive'}">${avatar(m.user_id)}
         <span class="m-name">${esc(m.p.name)}</span>
         ${m.role === 'leader' ? '<span class="mini-badge leader">팀장</span>' : ''}
-        <span class="muted small">${esc(m.p.department ?? '')}</span>
+        <span class="muted small">${esc([m.p.department, m.p.position].filter(Boolean).join(' · '))}</span>
         <span class="spacer"></span>
         ${canMng ? `<button class="btn ghost xs" data-action="toggle-leader" data-team="${team.id}" data-user="${m.user_id}">${m.role === 'leader' ? '팀원으로' : '팀장으로'}</button>
           <button class="btn ghost xs danger-text" data-action="remove-member" data-team="${team.id}" data-user="${m.user_id}">${m.user_id === state.me.id ? '탈퇴' : '제거'}</button>`
@@ -984,13 +998,14 @@ function peopleTable(admin) {
     (b.is_active - a.is_active) || a.name.localeCompare(b.name, 'ko'));
   const teamsOf = (uid) => state.members.filter((m) => m.user_id === uid).map((m) => teamById(m.team_id)?.name).filter(Boolean);
   return `<table class="table">
-    <thead><tr><th>이름</th><th>이메일</th><th>부서</th><th>팀</th><th>권한</th><th>상태</th></tr></thead>
+    <thead><tr><th>이름</th><th>이메일</th><th>부서</th><th>직급</th><th>팀</th><th>권한</th><th>상태</th></tr></thead>
     <tbody>${people.map((u) => {
       const self = u.id === state.me.id;
       return `<tr class="${u.is_active ? '' : 'inactive'}">
         <td><div class="cell-user">${avatar(u.id)}${esc(u.name)}${self ? ' <span class="muted small">(나)</span>' : ''}</div></td>
         <td class="muted">${esc(u.email)}</td>
-        <td>${esc(u.department ?? '')}</td>
+        <td>${admin ? `<input class="input xs history-field" data-change="admin-department" data-user="${u.id}" value="${esc(u.department ?? '')}" placeholder="부서">` : esc(u.department ?? '')}</td>
+        <td>${admin ? `<input class="input xs history-field" data-change="admin-position" data-user="${u.id}" value="${esc(u.position ?? '')}" placeholder="직급">` : esc(u.position ?? '')}</td>
         <td class="small">${teamsOf(u.id).map(esc).join(', ')}</td>
         <td>${admin && !self ? `<select class="input xs" data-change="admin-role" data-user="${u.id}">
             <option value="member"${u.role === 'member' ? ' selected' : ''}>구성원</option>
@@ -1000,6 +1015,56 @@ function peopleTable(admin) {
           : (u.is_active ? '재직' : '비활성')}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
+}
+
+function historyScalar(value) {
+  if (value == null) return '없음';
+  if (typeof value === 'boolean') return value ? '재직' : '비활성';
+  if (typeof value === 'object') return value.name ?? value.role ?? JSON.stringify(value);
+  return String(value);
+}
+
+function historyRole(value) {
+  const role = value?.role ?? value;
+  return role === 'leader' ? '팀장' : role === 'member' ? '팀원' : role === 'admin' ? '관리자' : historyScalar(role);
+}
+
+function organizationHistoryText(row) {
+  const oldValue = row.old_value;
+  const newValue = row.new_value;
+  const teamName = teamById(row.team_id)?.name ?? oldValue?.name ?? newValue?.name ?? `팀 #${row.team_id}`;
+  const person = row.user_id ? userName(row.user_id) : '';
+  switch (row.action) {
+    case 'team_created': return `팀 생성: ${historyScalar(newValue?.name)}`;
+    case 'team_deleted': return `팀 삭제: ${historyScalar(oldValue?.name)}`;
+    case 'team_updated': return oldValue?.name !== newValue?.name
+      ? `팀 이름 변경: ${historyScalar(oldValue?.name)} → ${historyScalar(newValue?.name)}`
+      : `${teamName} 설명 변경`;
+    case 'team_member_added': return `${person}님을 ${teamName}에 추가 (${historyRole(newValue)})`;
+    case 'team_member_removed': return `${person}님이 ${teamName}에서 제외됨`;
+    case 'team_role_changed': return `${person}님의 ${teamName} 역할: ${historyRole(oldValue)} → ${historyRole(newValue)}`;
+    case 'name_changed': return `이름 변경: ${historyScalar(oldValue)} → ${historyScalar(newValue)}`;
+    case 'department_changed': return `${person}님의 부서: ${historyScalar(oldValue)} → ${historyScalar(newValue)}`;
+    case 'position_changed': return `${person}님의 직급: ${historyScalar(oldValue)} → ${historyScalar(newValue)}`;
+    case 'account_role_changed': return `${person}님의 권한: ${historyRole(oldValue)} → ${historyRole(newValue)}`;
+    case 'active_status_changed': return `${person}님의 재직 상태: ${historyScalar(oldValue)} → ${historyScalar(newValue)}`;
+    default: return row.action;
+  }
+}
+
+function organizationHistoryTable() {
+  if (!state.organizationHistoryAvailable) {
+    return '<div class="empty">조직 이력 SQL을 먼저 실행하면 이력이 표시됩니다.</div>';
+  }
+  if (!state.organizationHistory.length) return '<div class="empty">아직 기록된 변경 이력이 없습니다.</div>';
+  return `<table class="table history-table">
+    <thead><tr><th>일시</th><th>변경 내용</th><th>변경한 사람</th></tr></thead>
+    <tbody>${state.organizationHistory.map((row) => `<tr>
+      <td class="muted small">${fmtDateTime(row.created_at)}</td>
+      <td>${esc(organizationHistoryText(row))}</td>
+      <td>${esc(row.changed_by ? userName(row.changed_by) : '시스템')}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
 }
 
 // -------------------------------------------------------------
@@ -1090,7 +1155,8 @@ function openProfileModal() {
     body: `
       <label class="field"><span>이메일</span><input class="input" value="${esc(me.email)}" disabled></label>
       <label class="field"><span>이름</span><input name="name" class="input" required maxlength="50" value="${esc(me.name)}"></label>
-      <label class="field"><span>부서</span><input name="department" class="input" maxlength="100" value="${esc(me.department ?? '')}" placeholder="예: 개발팀"></label>`,
+      <label class="field"><span>부서</span><input name="department" class="input" maxlength="100" value="${esc(me.department ?? '')}" placeholder="예: 개발팀"></label>
+      <label class="field"><span>직급</span><input class="input" value="${esc(me.position ?? '')}" placeholder="관리자가 설정합니다" disabled></label>`,
     onSubmit: async (fd) => {
       await q(sb.from('profiles').update({
         name: String(fd.get('name')).trim(),
@@ -1320,6 +1386,24 @@ const changes = {
     }
     await reloadPart('attachments');
     if (files.length) toast('첨부했습니다.');
+  },
+  'admin-department': async (el) => {
+    const user = state.profiles.get(el.dataset.user);
+    const value = el.value.trim() || null;
+    if ((user?.department ?? null) === value) return;
+    await q(sb.from('profiles').update({ department: value }).eq('id', el.dataset.user).select().single());
+    await refreshBase();
+    renderTeamsView();
+    toast('부서를 변경했습니다.');
+  },
+  'admin-position': async (el) => {
+    const user = state.profiles.get(el.dataset.user);
+    const value = el.value.trim() || null;
+    if ((user?.position ?? null) === value) return;
+    await q(sb.from('profiles').update({ position: value }).eq('id', el.dataset.user).select().single());
+    await refreshBase();
+    renderTeamsView();
+    toast('직급을 변경했습니다.');
   },
   'admin-role': async (el) => {
     await q(sb.from('profiles').update({ role: el.value }).eq('id', el.dataset.user).select().single());
